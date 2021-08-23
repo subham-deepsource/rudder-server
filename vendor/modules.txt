@@ -351,8 +351,6 @@ github.com/segmentio/backo-go
 github.com/segmentio/ksuid
 # github.com/snowflakedb/gosnowflake v1.3.4
 github.com/snowflakedb/gosnowflake
-# github.com/spaolacci/murmur3 v1.1.0
-github.com/spaolacci/murmur3
 # github.com/spf13/afero v1.3.3
 github.com/spf13/afero
 github.com/spf13/afero/mem
@@ -368,11 +366,11 @@ github.com/spf13/viper
 github.com/subosito/gotenv
 # github.com/thoas/go-funk v0.5.0
 github.com/thoas/go-funk
-# github.com/tidwall/gjson v1.5.0
+# github.com/tidwall/gjson v1.6.5
 github.com/tidwall/gjson
-# github.com/tidwall/match v1.0.1
+# github.com/tidwall/match v1.0.3
 github.com/tidwall/match
-# github.com/tidwall/pretty v1.0.1
+# github.com/tidwall/pretty v1.0.2
 github.com/tidwall/pretty
 # github.com/tidwall/sjson v1.0.4
 github.com/tidwall/sjson

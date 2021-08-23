@@ -3,11 +3,13 @@ package gjson
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/tidwall/match"
 	"github.com/tidwall/pretty"
@@ -104,7 +106,8 @@ func (t Result) Bool() bool {
 	case True:
 		return true
 	case String:
-		return t.Str != "" && t.Str != "0" && t.Str != "false"
+		b, _ := strconv.ParseBool(strings.ToLower(t.Str))
+		return b
 	case Number:
 		return t.Num != 0
 	}
@@ -122,16 +125,17 @@ func (t Result) Int() int64 {
 		return n
 	case Number:
 		// try to directly convert the float64 to int64
-		n, ok := floatToInt(t.Num)
-		if !ok {
-			// now try to parse the raw string
-			n, ok = parseInt(t.Raw)
-			if !ok {
-				// fallback to a standard conversion
-				return int64(t.Num)
-			}
+		i, ok := safeInt(t.Num)
+		if ok {
+			return i
 		}
-		return n
+		// now try to parse the raw string
+		i, ok = parseInt(t.Raw)
+		if ok {
+			return i
+		}
+		// fallback to a standard conversion
+		return int64(t.Num)
 	}
 }
 
@@ -147,16 +151,17 @@ func (t Result) Uint() uint64 {
 		return n
 	case Number:
 		// try to directly convert the float64 to uint64
-		n, ok := floatToUint(t.Num)
-		if !ok {
-			// now try to parse the raw string
-			n, ok = parseUint(t.Raw)
-			if !ok {
-				// fallback to a standard conversion
-				return uint64(t.Num)
-			}
+		i, ok := safeInt(t.Num)
+		if ok && i >= 0 {
+			return uint64(i)
 		}
-		return n
+		// now try to parse the raw string
+		u, ok := parseUint(t.Raw)
+		if ok {
+			return u
+		}
+		// fallback to a standard conversion
+		return uint64(t.Num)
 	}
 }
 
@@ -493,6 +498,9 @@ func squash(json string) string {
 					}
 				}
 				if depth == 0 {
+					if i >= len(json) {
+						return json
+					}
 					return json[:i+1]
 				}
 			case '{', '[', '(':
@@ -1833,7 +1841,7 @@ type parseContext struct {
 // A path is in dot syntax, such as "name.last" or "age".
 // When the value is found it's returned immediately.
 //
-// A path is a series of keys searated by a dot.
+// A path is a series of keys separated by a dot.
 // A key may contain special wildcard characters '*' and '?'.
 // To access an array value use the index as the key.
 // To get the number of elements in an array or to access a child path, use
@@ -2522,25 +2530,11 @@ func parseInt(s string) (n int64, ok bool) {
 	return n, true
 }
 
-const minUint53 = 0
-const maxUint53 = 4503599627370495
-const minInt53 = -2251799813685248
-const maxInt53 = 2251799813685247
-
-func floatToUint(f float64) (n uint64, ok bool) {
-	n = uint64(f)
-	if float64(n) == f && n >= minUint53 && n <= maxUint53 {
-		return n, true
+func safeInt(f float64) (n int64, ok bool) {
+	if f < -9007199254740991 || f > 9007199254740991 {
+		return 0, false
 	}
-	return 0, false
-}
-
-func floatToInt(f float64) (n int64, ok bool) {
-	n = int64(f)
-	if float64(n) == f && n >= minInt53 && n <= maxInt53 {
-		return n, true
-	}
-	return 0, false
+	return int64(f), true
 }
 
 // execModifier parses the path to find a matching modifier function.
@@ -2821,4 +2815,76 @@ func modValid(json, arg string) string {
 		return ""
 	}
 	return json
+}
+
+// getBytes casts the input json bytes to a string and safely returns the
+// results as uniquely allocated data. This operation is intended to minimize
+// copies and allocations for the large json string->[]byte.
+func getBytes(json []byte, path string) Result {
+	var result Result
+	if json != nil {
+		// unsafe cast to string
+		result = Get(*(*string)(unsafe.Pointer(&json)), path)
+		// safely get the string headers
+		rawhi := *(*reflect.StringHeader)(unsafe.Pointer(&result.Raw))
+		strhi := *(*reflect.StringHeader)(unsafe.Pointer(&result.Str))
+		// create byte slice headers
+		rawh := reflect.SliceHeader{Data: rawhi.Data, Len: rawhi.Len}
+		strh := reflect.SliceHeader{Data: strhi.Data, Len: strhi.Len}
+		if strh.Data == 0 {
+			// str is nil
+			if rawh.Data == 0 {
+				// raw is nil
+				result.Raw = ""
+			} else {
+				// raw has data, safely copy the slice header to a string
+				result.Raw = string(*(*[]byte)(unsafe.Pointer(&rawh)))
+			}
+			result.Str = ""
+		} else if rawh.Data == 0 {
+			// raw is nil
+			result.Raw = ""
+			// str has data, safely copy the slice header to a string
+			result.Str = string(*(*[]byte)(unsafe.Pointer(&strh)))
+		} else if strh.Data >= rawh.Data &&
+			int(strh.Data)+strh.Len <= int(rawh.Data)+rawh.Len {
+			// Str is a substring of Raw.
+			start := int(strh.Data - rawh.Data)
+			// safely copy the raw slice header
+			result.Raw = string(*(*[]byte)(unsafe.Pointer(&rawh)))
+			// substring the raw
+			result.Str = result.Raw[start : start+strh.Len]
+		} else {
+			// safely copy both the raw and str slice headers to strings
+			result.Raw = string(*(*[]byte)(unsafe.Pointer(&rawh)))
+			result.Str = string(*(*[]byte)(unsafe.Pointer(&strh)))
+		}
+	}
+	return result
+}
+
+// fillIndex finds the position of Raw data and assigns it to the Index field
+// of the resulting value. If the position cannot be found then Index zero is
+// used instead.
+func fillIndex(json string, c *parseContext) {
+	if len(c.value.Raw) > 0 && !c.calcd {
+		jhdr := *(*reflect.StringHeader)(unsafe.Pointer(&json))
+		rhdr := *(*reflect.StringHeader)(unsafe.Pointer(&(c.value.Raw)))
+		c.value.Index = int(rhdr.Data - jhdr.Data)
+		if c.value.Index < 0 || c.value.Index >= len(json) {
+			c.value.Index = 0
+		}
+	}
+}
+
+func stringBytes(s string) []byte {
+	return *(*[]byte)(unsafe.Pointer(&reflect.SliceHeader{
+		Data: (*reflect.StringHeader)(unsafe.Pointer(&s)).Data,
+		Len:  len(s),
+		Cap:  len(s),
+	}))
+}
+
+func bytesString(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
 }
