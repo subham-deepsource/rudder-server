@@ -178,7 +178,7 @@ type LibrariesT []LibraryT
 
 type BackendConfig interface {
 	SetUp()
-	Get() (ConfigT, bool)
+	Get(bool, time.Duration) (ConfigT, bool)
 	GetRegulations() (RegulationsT, bool)
 	GetWorkspaceIDForWriteKey(string) string
 	GetWorkspaceLibrariesForWorkspaceID(string) LibrariesT
@@ -280,9 +280,46 @@ func regulationsUpdate(statConfigBackendError stats.RudderStats) {
 	}
 }
 
+func (existingConfig *ConfigT) enhanceConfig(configToPatch ConfigT) {
+	existingConfig.Libraries = configToPatch.Libraries
+	for _, sourcePatch := range configToPatch.Sources {
+		newSource := true
+		for _, existingSource := range existingConfig.Sources {
+			if sourcePatch.ID == existingSource.ID {
+				newSource = false
+				existingSource.Config = sourcePatch.Config
+				existingSource.Enabled = sourcePatch.Enabled
+				existingSource.Name = sourcePatch.Name
+				existingSource.SourceDefinition = sourcePatch.SourceDefinition
+				for _, destPatch := range sourcePatch.Destinations {
+					newDest := true
+					for _, existingDest := range existingSource.Destinations {
+						if existingDest.ID == destPatch.ID {
+							newDest = false
+							existingDest.Name = destPatch.Name
+							existingDest.Config = destPatch.Config
+							existingDest.Enabled = destPatch.Enabled
+							existingDest.Transformations = destPatch.Transformations
+							existingDest.IsProcessorEnabled = destPatch.IsProcessorEnabled
+							existingDest.DestinationDefinition = destPatch.DestinationDefinition
+						}
+					}
+					if newDest {
+						existingSource.Destinations = append(existingSource.Destinations, destPatch)
+					}
+				}
+			}
+		}
+		if newSource {
+			existingConfig.Sources = append(existingConfig.Sources, sourcePatch)
+		}
+	}
+	existingConfig.ConnectionFlags = configToPatch.ConnectionFlags
+}
+
 func configUpdate(statConfigBackendError stats.RudderStats) {
 
-	sourceJSON, ok := backendConfig.Get()
+	sourceJSON, ok := backendConfig.Get(initialized, pollInterval)
 	if !ok {
 		statConfigBackendError.Increment()
 	}
@@ -297,8 +334,8 @@ func configUpdate(statConfigBackendError stats.RudderStats) {
 		pkgLogger.Info("Workspace Config changed")
 		curSourceJSONLock.Lock()
 		trackConfig(curSourceJSON, sourceJSON)
-		filteredSourcesJSON := filterProcessorEnabledDestinations(sourceJSON)
-		curSourceJSON = sourceJSON
+		curSourceJSON.enhanceConfig(sourceJSON)
+		filteredSourcesJSON := filterProcessorEnabledDestinations(curSourceJSON)
 		curSourceJSONLock.Unlock()
 		initializedLock.Lock()
 		defer initializedLock.Unlock()

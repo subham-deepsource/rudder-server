@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rudderlabs/rudder-server/config"
+	"github.com/rudderlabs/rudder-server/utils/misc"
 
 	"github.com/cenkalti/backoff"
 	"github.com/tidwall/gjson"
@@ -67,8 +68,11 @@ func (multiWorkspaceConfig *MultiWorkspaceConfig) GetWorkspaceLibrariesForWorksp
 }
 
 //Get returns sources from all hosted workspaces
-func (multiWorkspaceConfig *MultiWorkspaceConfig) Get() (ConfigT, bool) {
+func (multiWorkspaceConfig *MultiWorkspaceConfig) Get(initialized bool, pollInterval time.Duration) (ConfigT, bool) {
 	url := fmt.Sprintf("%s/hostedWorkspaceConfig?fetchAll=true", configBackendURL)
+	if initialized {
+		url += fmt.Sprintf("&updatedAfter=%s", time.Now().Add(-pollInterval).UTC().Format(misc.RFC3339Milli))
+	}
 
 	var respBody []byte
 	var statusCode int
